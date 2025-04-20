@@ -116,7 +116,7 @@ class OOSenv(gym.Env):
             part = arc.split(" => ")
             if (part[0] == current_node_str 
                 and self.cost_matrix[self.current_node, int(part[1].replace("n", "")), 1] <= self.current_fuel 
-                and self.cost_matrix[self.current_node, int(part[1].replace("n", "")), 0] <= (self.max_time_horizon - self.current_time)
+                #and self.cost_matrix[self.current_node, int(part[1].replace("n", "")), 0] <= (self.max_time_horizon - self.current_time)
             ):
                 allowed.append(int(part[1].replace("n", "")))
         return allowed
@@ -169,7 +169,7 @@ class OOSenv(gym.Env):
                 node = int(node_id.replace("n", ""))
                 if node == chosen_node and arrival_time == node_time:
                     self.visited_satellites[idx] = 1
-                    reward = 25.0
+                    reward = 50.0
                     stopforloop = True
                     break
 
