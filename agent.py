@@ -42,7 +42,7 @@ def train(input_dir):
 
 
 def test(model_timesteps, input_dir, render=True):
-    env = OOS_env.OOSenv(input_dir)
+    env = gym.make('OOS-maintenance-v0', input_directory=input_dir, render_mode=None)
 
     # Load Model
     model = MaskablePPO.load(f"models/maskPPO_{model_timesteps}", env=env)
@@ -75,14 +75,14 @@ if __name__ == "__main__":
         + case_study
     )
 
-    #train(input_directory)
+    train(input_directory)
     #test(100000, input_directory)
 
-    #"""
-    env = OOS_env.OOSenv(input_directory)
+    """
+    env = gym.make('OOS-maintenance-v0', input_directory=input_directory, render_mode=None)
     env.reset()
     print("\n")
     print(env.a0)
     print(env.maint_params)
     print("\n")
-    #"""
+    """
