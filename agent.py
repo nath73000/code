@@ -76,7 +76,7 @@ if __name__ == "__main__":
     )
 
     #train(input_directory)
-    test(200000, input_directory)
+    test(500000, input_directory)
 
     """
     env = gym.make('OOS-maintenance-v0', input_directory=input_directory, render_mode=None)

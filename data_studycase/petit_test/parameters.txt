@@ -5,10 +5,10 @@ Starting orbit / node                    : Leo  (node n0)
 Time horizon (s)                         : 100000
 Task starting nodes (starting_t)         : 1,0,2
 Depot starting nodes (starting_r)        : 0,0,1
-Initial operating times OT (a0)          : 60, 61, 30
+Initial operating times OT (a0)          : 24, 2, 35
 
 ----- Maintenance model constants -----
-Failure threshold  H             : 70
+Failure threshold  H             : 30
 Preventive window   h            : 10
 Cost c_PM (preventive)           : 10
 Cost c_CM (corrective)           : 25

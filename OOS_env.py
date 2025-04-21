@@ -1,8 +1,6 @@
 from ImportData import import_data
 
 import numpy as np
-import matplotlib.pyplot as plt
-from tqdm import tqdm
 
 import os
 import pandas as pd
@@ -17,6 +15,15 @@ register(
     id='OOS-maintenance-v0',
     entry_point='OOS_env:OOSenv',    # module_name:class_name
 )
+
+
+class Satellite:
+    def __init__(self, ID, starting_orbit, starting_node, operating_time):
+        self.id = ID
+        self.starting_orbit = starting_orbit
+        self.starting_node = starting_node
+        self.operating_time = operating_time
+        self.sub_tasks = []
 
 
 class OOSenv(gym.Env):
@@ -86,6 +93,7 @@ class OOSenv(gym.Env):
             "visited_satellites": gym.spaces.MultiBinary(self.num_satellites),
             "action_mask": gym.spaces.MultiBinary(self.num_nodes),
             "satellites_pos": gym.spaces.Box(low=0, high=max(self.max_time_horizon, self.num_nodes), shape=(2 * self.num_satellites,), dtype=np.int32,),
+            "operating_time": gym.spaces.Box(low=0, high=self.max_time_horizon, shape=(self.num_satellites,), dtype=np.int32)
         })
 
 
@@ -98,7 +106,18 @@ class OOSenv(gym.Env):
         self.visited_satellites = np.zeros(self.num_satellites, dtype=np.int8)
         self.route = [self.current_node]
         self.satellites_pos = self.get_satellites_pos()
+        self.operating_time = self.get_initial_operating_time()
         return self._get_obs(), {}
+    
+
+    def get_initial_operating_time(self):
+        op_times = np.array([self.a0[sat_id] for sat_id in self.satellites],
+                        dtype=np.int32)
+
+        # On le garde aussi dans un attribut pour pouvoir le ré‑utiliser
+        self.operating_time = op_times
+        return op_times
+
 
 
     def get_satellites_pos(self):
@@ -138,6 +157,7 @@ class OOSenv(gym.Env):
             "visited_satellites": self.visited_satellites.astype(np.int8),
             "action_mask": self.action_masks(),
             "satellites_pos": self.get_satellites_pos(),
+            "operating_time": self.operating_time
         }
 
 
@@ -151,10 +171,19 @@ class OOSenv(gym.Env):
         # The choosen action is represent by the next node to go
         chosen_node = action
 
+
         # Compute the time to go to the next node
-        travel_time = int(self.cost_matrix[self.current_node, chosen_node, 0])
+        travel_time = int(self.cost_matrix[self.current_node, chosen_node, 0])   # Also represent the elapsed time since the last action
         arrival_time = self.current_time + travel_time
         fuel_cost = self.cost_matrix[self.current_node, chosen_node, 1]
+
+
+        # Uptade the opereting time of the satellites and add the operating cost 
+        for i in range(self.num_satellites):
+            for _ in range(travel_time):
+                if self.operating_time[i] >= self.maint_params["H"]:
+                    reward -= self.maint_params["c_OP"]
+                self.operating_time[i] += 1
 
         stopforloop = False
 
@@ -168,16 +197,31 @@ class OOSenv(gym.Env):
             for key, (node_id, node_time) in pos_sat_list:
                 node = int(node_id.replace("n", ""))
                 if node == chosen_node and arrival_time == node_time:
-                    self.visited_satellites[idx] = 1
-                    reward = 50.0
-                    stopforloop = True
-                    break
+
+                    if self.maint_params["H"] - self.maint_params["h"] <= self.operating_time[idx] < self.maint_params["H"]:
+                        # Make PM (in the correct time window to do a PM)
+                        self.visited_satellites[idx] = 1
+                        self.operating_time[idx] = 0
+                        reward -= self.maint_params["c_PM"]
+
+                        stopforloop = True
+                        break
+
+
+                    if self.operating_time[idx] >= self.maint_params["H"]:
+                        # Make CM
+                        self.visited_satellites[idx] = 1
+                        self.operating_time[idx] = 0
+                        reward -= self.maint_params["c_CM"]
+
+                        stopforloop = True
+                        break
 
             if stopforloop:
                 break
 
-        if not stopforloop:
-            reward = -0.1
+        #if not stopforloop:
+        #    reward = -0.1
 
         self.route.append(f"{self.current_node} to {chosen_node}")
         self.current_node = chosen_node
@@ -186,7 +230,7 @@ class OOSenv(gym.Env):
 
         mult_fuel_cost = 1
         reward -= fuel_cost * mult_fuel_cost
-
+                
 
         if self.current_time > self.max_time_horizon:
             truncated = True
@@ -195,6 +239,7 @@ class OOSenv(gym.Env):
         elif self.visited_satellites.sum() == self.num_satellites:
             terminated = True
             info["termination"] = "All satellites maintenaced"
+
 
         #print(f"step → t={self.current_time}, done={(terminated or truncated)}, serv={self.serviced_satellites.sum()}")
 
@@ -206,6 +251,7 @@ class OOSenv(gym.Env):
         print("Current fuel :", self.current_fuel)
         print("Current time :", self.current_time)
         print("Maintenaced Satellites :", self.visited_satellites)
+        print("Opereting Time :", self.operating_time)
         print("-----------------------------\n")
 
 
@@ -238,6 +284,8 @@ if __name__ == "__main__":
     truncated = False
     total_reward = 0
     step_count = 0
+
+    print(env.maint_params)
 
     while not terminated and not truncated:
         # Choose a random action
