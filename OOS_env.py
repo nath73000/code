@@ -58,6 +58,8 @@ class OOSenv(gym.Env):
 
         self.initial_fuel = self.D["d1"]["F_d"]
 
+        self.num_refueling_depot = len(self.A_Rt.get(0, ()))
+
         self.pos_matrix = np.zeros((self.num_satellites, self.max_time_horizon + 1))
         # We fill the matrix with the position of the satellite for each timestep
         for i, sat_id in enumerate(self.satellites):
@@ -93,7 +95,8 @@ class OOSenv(gym.Env):
             "visited_satellites": gym.spaces.MultiBinary(self.num_satellites),
             "action_mask": gym.spaces.MultiBinary(self.num_nodes),
             "satellites_pos": gym.spaces.Box(low=0, high=max(self.max_time_horizon, self.num_nodes), shape=(2 * self.num_satellites,), dtype=np.int32,),
-            "operating_time": gym.spaces.Box(low=0, high=self.max_time_horizon, shape=(self.num_satellites,), dtype=np.int32)
+            "operating_time": gym.spaces.Box(low=0, high=self.max_time_horizon, shape=(self.num_satellites,), dtype=np.int32),
+            "refuel_positions": spaces.Box(low=0, high=self.num_nodes - 1, shape=(2 * self.num_refueling_depot,), dtype=np.int32)
         })
 
 
@@ -107,6 +110,7 @@ class OOSenv(gym.Env):
         self.route = [self.current_node]
         self.satellites_pos = self.get_satellites_pos()
         self.operating_time = self.get_initial_operating_time()
+        self.refuel_positions = self.get_refuel_positions()
         return self._get_obs(), {}
     
 
@@ -119,6 +123,20 @@ class OOSenv(gym.Env):
         return op_times
 
 
+    def get_refuel_positions(self) -> np.ndarray:
+        """
+        Return an array of fixe length: self.num_refueling_depot * 2
+        with the starting node and final node of the arc that is consider
+        as refueling arc
+        """
+        arcs = self.A_Rt[self.current_time]
+        positions = []
+        for arc_str in arcs:
+            frm, to = arc_str.split(" => ")
+            positions.append(int(frm.replace("n", "")))
+            positions.append(int(to.replace("n", "")))
+        return np.array(positions, dtype=np.int32)
+
 
     def get_satellites_pos(self):
         pos = []
@@ -129,15 +147,28 @@ class OOSenv(gym.Env):
 
 
     def get_allowed_actions(self):
-        current_node_str = f"n{self.current_node}"
+        """
+        Returns the list of node indices accessible from current_node
+        without exceeding the available fuel or time horizon.
+        """
+
+        current = self.current_node
+        rem_time = self.max_time_horizon - self.current_time
         allowed = []
-        for arc in self.A.keys():
-            part = arc.split(" => ")
-            if (part[0] == current_node_str 
-                and self.cost_matrix[self.current_node, int(part[1].replace("n", "")), 1] <= self.current_fuel 
-                #and self.cost_matrix[self.current_node, int(part[1].replace("n", "")), 0] <= (self.max_time_horizon - self.current_time)
-            ):
-                allowed.append(int(part[1].replace("n", "")))
+
+        for arc_str in self.A.keys():
+            frm, to = arc_str.split(" => ")
+            # We are interested only by the arcs starting from the current node. If it's not the case, we go to the next arc in self.A
+            if frm != f"n{current}":
+                continue
+
+            to_idx = int(to.replace("n", ""))
+            travel_time = self.cost_matrix[current, to_idx, 0]
+            fuel_cost   = self.cost_matrix[current, to_idx, 1]
+
+            if fuel_cost <= self.current_fuel and travel_time <= rem_time:
+                allowed.append(to_idx)
+
         return allowed
 
 
@@ -157,18 +188,24 @@ class OOSenv(gym.Env):
             "visited_satellites": self.visited_satellites.astype(np.int8),
             "action_mask": self.action_masks(),
             "satellites_pos": self.get_satellites_pos(),
-            "operating_time": self.operating_time
+            "operating_time": self.operating_time,
+            "refuel_positions": self.get_refuel_positions()
         }
 
 
     def step(self, action):
 
+        # When the agent reach the time horizon, stop the episode
+        if self.current_time == self.max_time_horizon:
+            return self._get_obs(), 0.0, False, True, {"termination":"Time horizon reached"}
+    
         terminated = False
         truncated = False
         info = {}
         reward = 0.0
 
         # The choosen action is represent by the next node to go
+        old_node = self.current_node
         chosen_node = action
 
 
@@ -228,22 +265,27 @@ class OOSenv(gym.Env):
         self.current_time += travel_time
         self.current_fuel -= fuel_cost
 
+        # construire la clé de l'arc
+        arc_str = f"n{old_node} => n{chosen_node}"
+        # si cet arc est un arc de ravitaillement au temps courant, on recharge
+        if arc_str in self.A_Rt.get(self.current_time, ()):
+            # on recharge à pleine capacité (vous pouvez ajuster selon votre modèle)
+            self.current_fuel += 1
+
         mult_fuel_cost = 1
         reward -= fuel_cost * mult_fuel_cost
                 
 
-        if self.current_time > self.max_time_horizon:
+        if self.current_time >= self.max_time_horizon:
             truncated = True
             info["termination"] = "Time horizon reached"
             
-        elif self.visited_satellites.sum() == self.num_satellites:
+        if self.visited_satellites.sum() == self.num_satellites:
             terminated = True
             info["termination"] = "All satellites maintenaced"
 
-
-        #print(f"step → t={self.current_time}, done={(terminated or truncated)}, serv={self.serviced_satellites.sum()}")
-
         return self._get_obs(), reward, terminated, truncated, info
+
 
     def render(self, mode="human"):
         print("-----------------------------")
@@ -285,16 +327,15 @@ if __name__ == "__main__":
     total_reward = 0
     step_count = 0
 
-    print(env.maint_params)
-
     while not terminated and not truncated:
         # Choose a random action
-        action = env.action_space.sample()
+        allowed = env.unwrapped.get_allowed_actions()
+        if not allowed:
+            print("No more valid action → end of episode.")
+            break
 
         # Skip action if invalid
-        masks = env.unwrapped.action_masks()
-        if masks[action] == False:
-            continue
+        action = np.random.choice(allowed)
 
         # Perform action
         observation, reward, terminated, truncated, _ = env.step(action)
@@ -305,6 +346,7 @@ if __name__ == "__main__":
         print(f"Step: {step_count} Action: {action}")
         print(f"Observation: {observation}")
         print(f"Reward: {reward}\n")
+        print(env.current_time)
 
     print(f"---- Total Reward: {total_reward} ----")
 
