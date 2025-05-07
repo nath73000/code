@@ -76,13 +76,16 @@ if __name__ == "__main__":
     )
 
     #train(input_directory)
-    test(200000, input_directory)
+    test(400000, input_directory)
 
     """
     env = gym.make('OOS-maintenance-v0', input_directory=input_directory, render_mode=None)
     env.reset()
+    env.current_time = 1
     print("\n")
-    print(env.a0)
-    print(env.maint_params)
+    print(env.current_time)
+    print(env.A_Rt[env.current_time])
+    print(env.unwrapped.get_refuel_positions())
+    #print(env.maint_params)
     print("\n")
     """

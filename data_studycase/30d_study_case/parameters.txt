@@ -1,0 +1,18 @@
+===== STUDY‑CASE PARAMETERS =====
+Max fuel capacity (Fd)                   : 30
+Nb of time period to refuel to Fd (RFd)  : 30
+Starting orbit / node                    : Leo  (node n0)
+Time horizon (s)                         : 2592000 = 30.0 d
+Task starting nodes (starting_t)         : 0,1,2,1,2,0,2,0,1,0,4,8,2,6,10,1,5,9,3,7,11,0,8,16
+Depot starting nodes (starting_r)        : 1,0,1,4,5,8,2,12
+Initial operating times OT (a0)          : 769, 978, 489, 591, 588, 394, 488, 812, 315, 666, 692, 489, 782, 589, 674, 467, 589, 836, 763, 188, 293, 890, 183, 328
+
+----- Maintenance model constants -----
+Failure threshold  H             : 1008
+Preventive window   h            : 480
+Cost c_PM (preventive)           : 10
+Cost c_CM (corrective)           : 25
+Cost c_OP (opportunity)          : 5
+
+----- Simulation parameters -----
+Step time (s)                    : 1800.0

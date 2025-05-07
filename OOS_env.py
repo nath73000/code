@@ -1,8 +1,6 @@
 from ImportData import import_data
 
 import numpy as np
-import matplotlib.pyplot as plt
-from tqdm import tqdm
 
 import os
 import pandas as pd
@@ -17,6 +15,15 @@ register(
     id='OOS-maintenance-v0',
     entry_point='OOS_env:OOSenv',    # module_name:class_name
 )
+
+
+class Satellite:
+    def __init__(self, ID, starting_orbit, starting_node, operating_time):
+        self.id = ID
+        self.starting_orbit = starting_orbit
+        self.starting_node = starting_node
+        self.operating_time = operating_time
+        self.sub_tasks = []
 
 
 class OOSenv(gym.Env):
@@ -50,6 +57,8 @@ class OOSenv(gym.Env):
         self.max_time_horizon = self.T[-1]
 
         self.initial_fuel = self.D["d1"]["F_d"]
+
+        self.num_refueling_depot = len(self.A_Rt.get(0, ()))
 
         self.pos_matrix = np.zeros((self.num_satellites, self.max_time_horizon + 1))
         # We fill the matrix with the position of the satellite for each timestep
@@ -86,6 +95,8 @@ class OOSenv(gym.Env):
             "visited_satellites": gym.spaces.MultiBinary(self.num_satellites),
             "action_mask": gym.spaces.MultiBinary(self.num_nodes),
             "satellites_pos": gym.spaces.Box(low=0, high=max(self.max_time_horizon, self.num_nodes), shape=(2 * self.num_satellites,), dtype=np.int32,),
+            "operating_time": gym.spaces.Box(low=0, high=self.max_time_horizon, shape=(self.num_satellites,), dtype=np.int32),
+            "refuel_positions": spaces.Box(low=0, high=self.num_nodes - 1, shape=(2 * self.num_refueling_depot,), dtype=np.int32)
         })
 
 
@@ -98,7 +109,33 @@ class OOSenv(gym.Env):
         self.visited_satellites = np.zeros(self.num_satellites, dtype=np.int8)
         self.route = [self.current_node]
         self.satellites_pos = self.get_satellites_pos()
+        self.operating_time = self.get_initial_operating_time()
+        self.refuel_positions = self.get_refuel_positions()
         return self._get_obs(), {}
+    
+
+    def get_initial_operating_time(self):
+        op_times = np.array([self.a0[sat_id] for sat_id in self.satellites],
+                        dtype=np.int32)
+
+        # On le garde aussi dans un attribut pour pouvoir le ré‑utiliser
+        self.operating_time = op_times
+        return op_times
+
+
+    def get_refuel_positions(self) -> np.ndarray:
+        """
+        Return an array of fixe length: self.num_refueling_depot * 2
+        with the starting node and final node of the arc that is consider
+        as refueling arc
+        """
+        arcs = self.A_Rt[self.current_time]
+        positions = []
+        for arc_str in arcs:
+            frm, to = arc_str.split(" => ")
+            positions.append(int(frm.replace("n", "")))
+            positions.append(int(to.replace("n", "")))
+        return np.array(positions, dtype=np.int32)
 
 
     def get_satellites_pos(self):
@@ -110,15 +147,28 @@ class OOSenv(gym.Env):
 
 
     def get_allowed_actions(self):
-        current_node_str = f"n{self.current_node}"
+        """
+        Returns the list of node indices accessible from current_node
+        without exceeding the available fuel or time horizon.
+        """
+
+        current = self.current_node
+        rem_time = self.max_time_horizon - self.current_time
         allowed = []
-        for arc in self.A.keys():
-            part = arc.split(" => ")
-            if (part[0] == current_node_str 
-                and self.cost_matrix[self.current_node, int(part[1].replace("n", "")), 1] <= self.current_fuel 
-                #and self.cost_matrix[self.current_node, int(part[1].replace("n", "")), 0] <= (self.max_time_horizon - self.current_time)
-            ):
-                allowed.append(int(part[1].replace("n", "")))
+
+        for arc_str in self.A.keys():
+            frm, to = arc_str.split(" => ")
+            # We are interested only by the arcs starting from the current node. If it's not the case, we go to the next arc in self.A
+            if frm != f"n{current}":
+                continue
+
+            to_idx = int(to.replace("n", ""))
+            travel_time = self.cost_matrix[current, to_idx, 0]
+            fuel_cost   = self.cost_matrix[current, to_idx, 1]
+
+            if fuel_cost <= self.current_fuel and travel_time <= rem_time:
+                allowed.append(to_idx)
+
         return allowed
 
 
@@ -138,23 +188,39 @@ class OOSenv(gym.Env):
             "visited_satellites": self.visited_satellites.astype(np.int8),
             "action_mask": self.action_masks(),
             "satellites_pos": self.get_satellites_pos(),
+            "operating_time": self.operating_time,
+            "refuel_positions": self.get_refuel_positions()
         }
 
 
     def step(self, action):
 
+        # When the agent reach the time horizon, stop the episode
+        if self.current_time == self.max_time_horizon:
+            return self._get_obs(), 0.0, False, True, {"termination":"Time horizon reached"}
+    
         terminated = False
         truncated = False
         info = {}
         reward = 0.0
 
         # The choosen action is represent by the next node to go
+        old_node = self.current_node
         chosen_node = action
 
+
         # Compute the time to go to the next node
-        travel_time = int(self.cost_matrix[self.current_node, chosen_node, 0])
+        travel_time = int(self.cost_matrix[self.current_node, chosen_node, 0])   # Also represent the elapsed time since the last action
         arrival_time = self.current_time + travel_time
         fuel_cost = self.cost_matrix[self.current_node, chosen_node, 1]
+
+
+        # Uptade the opereting time of the satellites and add the operating cost 
+        for i in range(self.num_satellites):
+            for _ in range(travel_time):
+                if self.operating_time[i] >= self.maint_params["H"]:
+                    reward -= self.maint_params["c_OP"]
+                self.operating_time[i] += 1
 
         stopforloop = False
 
@@ -168,37 +234,58 @@ class OOSenv(gym.Env):
             for key, (node_id, node_time) in pos_sat_list:
                 node = int(node_id.replace("n", ""))
                 if node == chosen_node and arrival_time == node_time:
-                    self.visited_satellites[idx] = 1
-                    reward = 50.0
-                    stopforloop = True
-                    break
+
+                    if self.maint_params["H"] - self.maint_params["h"] <= self.operating_time[idx] < self.maint_params["H"]:
+                        # Make PM (in the correct time window to do a PM)
+                        self.visited_satellites[idx] = 1
+                        self.operating_time[idx] = 0
+                        reward -= self.maint_params["c_PM"]
+
+                        stopforloop = True
+                        break
+
+
+                    if self.operating_time[idx] >= self.maint_params["H"]:
+                        # Make CM
+                        self.visited_satellites[idx] = 1
+                        self.operating_time[idx] = 0
+                        reward -= self.maint_params["c_CM"]
+
+                        stopforloop = True
+                        break
 
             if stopforloop:
                 break
 
-        if not stopforloop:
-            reward = -0.1
+        #if not stopforloop:
+        #    reward = -0.1
 
         self.route.append(f"{self.current_node} to {chosen_node}")
         self.current_node = chosen_node
         self.current_time += travel_time
         self.current_fuel -= fuel_cost
 
+        # construire la clé de l'arc
+        arc_str = f"n{old_node} => n{chosen_node}"
+        # si cet arc est un arc de ravitaillement au temps courant, on recharge
+        if arc_str in self.A_Rt.get(self.current_time, ()):
+            # on recharge à pleine capacité (vous pouvez ajuster selon votre modèle)
+            self.current_fuel += 1
+
         mult_fuel_cost = 1
         reward -= fuel_cost * mult_fuel_cost
+                
 
-
-        if self.current_time > self.max_time_horizon:
+        if self.current_time >= self.max_time_horizon:
             truncated = True
             info["termination"] = "Time horizon reached"
             
-        elif self.visited_satellites.sum() == self.num_satellites:
+        if self.visited_satellites.sum() == self.num_satellites:
             terminated = True
             info["termination"] = "All satellites maintenaced"
 
-        #print(f"step → t={self.current_time}, done={(terminated or truncated)}, serv={self.serviced_satellites.sum()}")
-
         return self._get_obs(), reward, terminated, truncated, info
+
 
     def render(self, mode="human"):
         print("-----------------------------")
@@ -206,6 +293,7 @@ class OOSenv(gym.Env):
         print("Current fuel :", self.current_fuel)
         print("Current time :", self.current_time)
         print("Maintenaced Satellites :", self.visited_satellites)
+        print("Opereting Time :", self.operating_time)
         print("-----------------------------\n")
 
 
@@ -241,12 +329,13 @@ if __name__ == "__main__":
 
     while not terminated and not truncated:
         # Choose a random action
-        action = env.action_space.sample()
+        allowed = env.unwrapped.get_allowed_actions()
+        if not allowed:
+            print("No more valid action → end of episode.")
+            break
 
         # Skip action if invalid
-        masks = env.unwrapped.action_masks()
-        if masks[action] == False:
-            continue
+        action = np.random.choice(allowed)
 
         # Perform action
         observation, reward, terminated, truncated, _ = env.step(action)
@@ -257,6 +346,7 @@ if __name__ == "__main__":
         print(f"Step: {step_count} Action: {action}")
         print(f"Observation: {observation}")
         print(f"Reward: {reward}\n")
+        print(env.current_time)
 
     print(f"---- Total Reward: {total_reward} ----")
 
