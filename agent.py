@@ -71,7 +71,7 @@ if __name__ == "__main__":
 
     case_study = "30d_study_case"
     input_directory = (
-        "/Users/nathanclaret/Desktop/thesis/code/data_studycase/"
+        "/nfs/speed-scratch/nathan/code/data_studycase/"
         + case_study
     )
 
