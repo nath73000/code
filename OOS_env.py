@@ -58,7 +58,7 @@ class OOSenv(gym.Env):
 
         self.initial_fuel = self.D["d1"]["F_d"]
 
-        self.num_refueling_depot = len(self.A_Rt.get(0, ()))
+        self.num_refueling_depot = max(len(arcs) for arcs in self.A_Rt.values())
 
         self.pos_matrix = np.zeros((self.num_satellites, self.max_time_horizon + 1))
         # We fill the matrix with the position of the satellite for each timestep
@@ -96,7 +96,7 @@ class OOSenv(gym.Env):
             "action_mask": gym.spaces.MultiBinary(self.num_nodes),
             "satellites_pos": gym.spaces.Box(low=0, high=max(self.max_time_horizon, self.num_nodes), shape=(2 * self.num_satellites,), dtype=np.int32,),
             "operating_time": gym.spaces.Box(low=0, high=self.max_time_horizon, shape=(self.num_satellites,), dtype=np.int32),
-            "refuel_positions": spaces.Box(low=0, high=self.num_nodes - 1, shape=(2 * self.num_refueling_depot,), dtype=np.int32)
+            "refuel_positions": spaces.Box(low=-1, high=self.num_nodes - 1, shape=(2 * self.num_refueling_depot,), dtype=np.int32)
         })
 
 
@@ -127,14 +127,18 @@ class OOSenv(gym.Env):
         """
         Return an array of fixe length: self.num_refueling_depot * 2
         with the starting node and final node of the arc that is consider
-        as refueling arc
+        as refueling arc. If we are at a step_time where a refueling depot is not
+        traked, we put -1.
         """
-        arcs = self.A_Rt[self.current_time]
+        arcs = self.A_Rt.get(self.current_time, ())
         positions = []
         for arc_str in arcs:
             frm, to = arc_str.split(" => ")
-            positions.append(int(frm.replace("n", "")))
-            positions.append(int(to.replace("n", "")))
+            positions += [int(frm.replace("n", "")), int(to.replace("n", ""))]
+
+        while len(positions) < 2*self.num_refueling_depot:
+            positions += [-1, -1]
+
         return np.array(positions, dtype=np.int32)
 
 
@@ -310,7 +314,7 @@ def my_check_env(input_dir):
 
 if __name__ == "__main__":
 
-    case_study = "petit_test"
+    case_study = "30d_study_case"
     input_directory = (
         "/Users/nathanclaret/Desktop/thesis/code/data_studycase/"
         + case_study
@@ -327,6 +331,7 @@ if __name__ == "__main__":
     total_reward = 0
     step_count = 0
 
+    
     while not terminated and not truncated:
         # Choose a random action
         allowed = env.unwrapped.get_allowed_actions()
@@ -349,4 +354,5 @@ if __name__ == "__main__":
         print(env.current_time)
 
     print(f"---- Total Reward: {total_reward} ----")
+    
 
